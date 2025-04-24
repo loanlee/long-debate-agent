@@ -13,10 +13,9 @@ def main():
         "If the answer is not in the chunk, say 'Not found in this chunk.'"
     )
     leader_prompt_template = (
-        "Given the following answers from different document chunks, synthesize a final answer to the question.\n"
+        "Given the following answers from different document chunks, synthesize a final answer to the question. Only state the answer without explanation\n"
         "Member outputs:\n{member_outputs}\n"
         "Question: {query}\n"
-        "If there is a clear, correct answer, state it. If not, explain why."
     )
     completed_ids = set()
     if os.path.exists(output_path):
@@ -35,7 +34,7 @@ def main():
                 context,
                 member_prompt,
                 leader_prompt,
-                chunk_size=200,
+                target_chunks=4,  # or set dynamically if desired
                 max_rounds=3
             )
             item["prediction"] = prediction

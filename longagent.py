@@ -1,21 +1,53 @@
-def split_into_chunks(doc: str, size: int = 2048) -> list:
-    """
-    Splits a document into chunks of approximately `size` tokens (whitespace split).
-    Args:
-        doc (str): The input document as a string.
-        size (int): The chunk size in tokens (default 2048).
-    Returns:
-        List[str]: List of document chunks.
-    """
-    tokens = doc.split()
+import numpy as np
+import re
+
+def split_into_chunks(doc: str, target_chunks: int) -> list:
+    # Split by passage headers like "Passage 0:", "Passage 1:", etc.
+    passages = re.split(r'Passage \d+:', doc)
+    # Remove empty strings and strip whitespace
+    passages = [p.strip() for p in passages if p.strip()]
+    print("Num of Passages: ", len(passages), "Target num Chunks:", target_chunks)
     chunks = []
-    for i in range(0, len(tokens), size):
-        chunk = ' '.join(tokens[i:i+size])
-        chunks.append(chunk)
+    for passage in passages:
+        tokens = passage.split()
+        print("Num of tokens in passage: ", len(tokens))
+        max_tokens_per_chunk = len(tokens) // (int(np.ceil(target_chunks/len(passages))))
+        print(f"Max tokens per chunk: {max_tokens_per_chunk}")
+        # Further split each passage into sub-chunks of max_tokens_per_chunk
+        for i in range(0, len(tokens), max_tokens_per_chunk):
+            chunk = ' '.join(tokens[i:i+max_tokens_per_chunk])
+            if chunk:
+                chunks.append(chunk)
+    # If only one chunk, fall back to token-based splitting for non-hotpotqa
+    if len(chunks) <= 1:
+        print("FALL BACK TO TOKEN-BASED SPLITTING")
+        tokens = doc.split()
+        token_chunks = np.array_split(tokens, target_chunks)
+        chunks = [' '.join(chunk) for chunk in token_chunks if len(chunk) > 0]
     return chunks
 
 from gemini_model import gemini_predict
 from typing import List, Dict, Any
+import re
+from difflib import SequenceMatcher
+
+STOPWORDS = set('the a an and or but if while with for to of in on at by from as is are was were be been being has have had do does did not no nor so than too very can will just'.split())
+
+def remove_stopwords(text):
+    return ' '.join([w for w in re.findall(r'\w+', text.lower()) if w not in STOPWORDS])
+
+def normalized_edit_distance(a, b):
+    return 1 - SequenceMatcher(None, a, b).ratio()
+
+def simple_conflict_detector(answers, threshold=0.4):
+    filtered = [remove_stopwords(ans) for ans in answers if ans.strip()]
+    if len(filtered) <= 1:
+        return False
+    for i in range(len(filtered)):
+        for j in range(i+1, len(filtered)):
+            if normalized_edit_distance(filtered[i], filtered[j]) > threshold:
+                return True
+    return False
 
 def call_gemini(prompt: str) -> str:
     """
@@ -48,27 +80,11 @@ def leader_agent(member_outputs: list, leader_prompt_template: str) -> str:
     prompt = leader_prompt_template.format(member_outputs=joined_outputs)
     return call_gemini(prompt)
 
-def long_agent_pipeline(doc: str, member_prompt_template: str, leader_prompt_template: str, chunk_size: int = 2048) -> str:
-    """
-    Orchestrates the full multi-agent workflow: splits the document, runs Member agents, and synthesizes with the Leader agent.
-    Args:
-        doc (str): The input document.
-        member_prompt_template (str): Prompt template for Member agents (should use {chunk}).
-        leader_prompt_template (str): Prompt template for Leader agent (should use {member_outputs}).
-        chunk_size (int): Token size for splitting the document (default 2048).
-    Returns:
-        str: The final synthesized answer from the Leader agent.
-    """
-    chunks = split_into_chunks(doc, size=chunk_size)
-    member_outputs = [member_agent(chunk, member_prompt_template) for chunk in chunks]
-    final_answer = leader_agent(member_outputs, leader_prompt_template)
-    return final_answer
-
 def collaborative_long_agent_pipeline(
     doc: str,
     member_prompt_template: str,
     leader_prompt_template: str,
-    chunk_size: int = 2048,
+    target_chunks: int = 4,
     max_rounds: int = 5
 ) -> (str, bool):
     """
@@ -78,8 +94,9 @@ def collaborative_long_agent_pipeline(
         conflict_resolution_failed (bool): True if consensus was not reached within max_rounds.
     """
     # Step 1: Chunking
-    chunks = split_into_chunks(doc, size=chunk_size)
+    chunks = split_into_chunks(doc, target_chunks)
     member_chunks = {i: chunk for i, chunk in enumerate(chunks)}
+    # print(member_chunks)
     member_outputs = {}
     dialogue_history = []
     state = "NEW_STATE"
@@ -88,29 +105,27 @@ def collaborative_long_agent_pipeline(
 
     while state != "ANSWER" and round_num < max_rounds:
         print(f"\n--- Reasoning Round {round_num+1} ---")
-        # Step 2: Query all members
         member_outputs = {}
         for i, chunk in member_chunks.items():
             prompt = member_prompt_template.format(chunk=chunk)
             answer = call_gemini(prompt)
             member_outputs[i] = answer
         dialogue_history.append({"round": round_num, "member_outputs": member_outputs.copy()})
-
-        # Step 3: Conflict detection
         answers = list(member_outputs.values())
-        unique_answers = set([a.strip().lower() for a in answers])
-        if len(unique_answers) == 1:
-            print("No conflict detected. All members agree.")
-            state = "ANSWER"
-            break
-        # Optionally, check for missing/empty answers
-        elif any(a.strip() == "" for a in answers):
+        # Use simple conflict detection
+        if any(a.strip() == "" for a in answers):
             print("Some members returned empty answers. Entering NEW_STATE.")
             state = "NEW_STATE"
+        elif not simple_conflict_detector(answers):
+            print("No conflict detected. All members agree.")
+            print("Member outputs:", answers)
+            state = "ANSWER"
+            break
         else:
             print(f"Conflict detected in round {round_num+1}. Entering CONFLICT state.")
+            print("Member outputs:", answers)
             state = "CONFLICT"
-
+        
         # Step 4: Conflict resolution (inter-member communication)
         if state == "CONFLICT":
             # Find clusters of conflicting answers
@@ -192,7 +207,6 @@ The Scott Special, also known as the Coyote Special, the Death Valley Coyote or 
         context,
         member_prompt_template,
         leader_prompt_template,
-        chunk_size=200,  # Small chunk size to force multiple members
         max_rounds=3
     )
     print("Gold answer:", gold_answer)
@@ -227,14 +241,8 @@ def test_conflict_resolution():
         context,
         member_prompt_template,
         leader_prompt_template,
-        chunk_size=10,  # Force each passage to be a separate chunk
         max_rounds=3
     )
     print("Gold answer:", gold_answer)
     print("Final answer:", final_answer)
     print("Conflict resolution failed:", conflict_resolution_failed)
-
-# Example usage:
-# doc = "word1 word2 ... wordN"
-# chunks = split_into_chunks(doc, 2048)
-# print(f"Number of chunks: {len(chunks)}")
