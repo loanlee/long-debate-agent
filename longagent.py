@@ -11,6 +11,7 @@ def split_into_chunks(doc: str, target_chunks: int) -> list:
     for passage in passages:
         tokens = passage.split()
         print("Num of tokens in passage: ", len(tokens))
+        # if target chunks < num of passages, each chunk is a passage
         max_tokens_per_chunk = len(tokens) // (int(np.ceil(target_chunks/len(passages))))
         print(f"Max tokens per chunk: {max_tokens_per_chunk}")
         # Further split each passage into sub-chunks of max_tokens_per_chunk
@@ -18,12 +19,6 @@ def split_into_chunks(doc: str, target_chunks: int) -> list:
             chunk = ' '.join(tokens[i:i+max_tokens_per_chunk])
             if chunk:
                 chunks.append(chunk)
-    # If only one chunk, fall back to token-based splitting for non-hotpotqa
-    if len(chunks) <= 1:
-        print("FALL BACK TO TOKEN-BASED SPLITTING")
-        tokens = doc.split()
-        token_chunks = np.array_split(tokens, target_chunks)
-        chunks = [' '.join(chunk) for chunk in token_chunks if len(chunk) > 0]
     return chunks
 
 from gemini_model import gemini_predict
