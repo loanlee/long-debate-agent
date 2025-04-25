@@ -10,7 +10,7 @@ def main():
         "Given the following passage chunk, answer the question as best as possible.\n"
         "Chunk:\n{chunk}\n"
         "Question: {query}\n"
-        "If the answer is not in the chunk, say 'Not found in this chunk.'"
+        "If the answer is not in the chunk, say 'not found in this chunk'"
     )
     leader_prompt_template = (
         "Given the following answers from different document chunks, synthesize a final answer to the question. Only state the answer without explanation\n"
@@ -26,15 +26,16 @@ def main():
         for item in reader:
             if item["id"] in completed_ids:
                 continue
+            print(f"Processing item {item['id']}")
             context = item["context"]
             query = item["input"]
             member_prompt = member_prompt_template.format(chunk="{chunk}", query=query)
             leader_prompt = leader_prompt_template.format(member_outputs="{member_outputs}", query=query)
             prediction, conflict_resolution_failed = collaborative_long_agent_pipeline(
+                query,
                 context,
                 member_prompt,
-                leader_prompt,
-                target_chunks=4, 
+                leader_prompt, 
                 max_rounds=3
             )
             item["prediction"] = prediction

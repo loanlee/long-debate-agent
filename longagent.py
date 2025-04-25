@@ -1,24 +1,23 @@
 import numpy as np
 import re
+import time
 
-def split_into_chunks(doc: str, target_chunks: int) -> list:
-    # Split by passage headers like "Passage 0:", "Passage 1:", etc.
-    passages = re.split(r'Passage \d+:', doc)
-    # Remove empty strings and strip whitespace
-    passages = [p.strip() for p in passages if p.strip()]
-    print("Num of Passages: ", len(passages), "Target num Chunks:", target_chunks)
+def split_into_chunks(doc: str, chunk_size: int = 1500) -> list:
+    """
+    Splits the document into chunks of fixed size (in tokens/words), treating all passages as a single text.
+    Args:
+        doc (str): The full document to split.
+        chunk_size (int): The maximum number of tokens/words per chunk (default 1500).
+    Returns:
+        list: List of string chunks.
+    """
+    tokens = doc.split()
     chunks = []
-    for passage in passages:
-        tokens = passage.split()
-        print("Num of tokens in passage: ", len(tokens))
-        # if target chunks < num of passages, each chunk is a passage
-        max_tokens_per_chunk = len(tokens) // (int(np.ceil(target_chunks/len(passages))))
-        print(f"Max tokens per chunk: {max_tokens_per_chunk}")
-        # Further split each passage into sub-chunks of max_tokens_per_chunk
-        for i in range(0, len(tokens), max_tokens_per_chunk):
-            chunk = ' '.join(tokens[i:i+max_tokens_per_chunk])
-            if chunk:
-                chunks.append(chunk)
+    for i in range(0, len(tokens), chunk_size):
+        chunk = ' '.join(tokens[i:i+chunk_size])
+        if chunk:
+            chunks.append(chunk)
+    print(f"Doc Length: {len(doc)} , Total tokens: {len(tokens)}, Chunk size: {chunk_size}, Num chunks: {len(chunks)}")
     return chunks
 
 from gemini_model import gemini_predict
@@ -45,41 +44,40 @@ def simple_conflict_detector(answers, threshold=0.4):
     return False
 
 def call_gemini(prompt: str) -> str:
-    """
-    Wrapper for Gemini model call. Returns the model's response as a string.
-    """
+    time.sleep(1)  # Add a 1-second delay between Gemini API calls to avoid quota limits
     return gemini_predict(prompt)
 
-def member_agent(chunk: str, prompt_template: str) -> str:
-    """
-    Processes a single chunk using the provided prompt template and Gemini model.
-    Args:
-        chunk (str): The text chunk to process.
-        prompt_template (str): The prompt template, should contain a placeholder for the chunk (e.g., {chunk}).
-    Returns:
-        str: The Gemini model's response for this chunk.
-    """
-    prompt = prompt_template.format(chunk=chunk)
-    return call_gemini(prompt)
+# def member_agent(chunk: str, prompt_template: str) -> str:
+#     """
+#     Processes a single chunk using the provided prompt template and Gemini model.
+#     Args:
+#         chunk (str): The text chunk to process.
+#         prompt_template (str): The prompt template, should contain a placeholder for the chunk (e.g., {chunk}).
+#     Returns:
+#         str: The Gemini model's response for this chunk.
+#     """
+#     prompt = prompt_template.format(chunk=chunk)
+#     return call_gemini(prompt)
 
-def leader_agent(member_outputs: list, leader_prompt_template: str) -> str:
-    """
-    Aggregates Member agent outputs and synthesizes a final answer using the Gemini model.
-    Args:
-        member_outputs (list): List of strings, each the output from a Member agent.
-        leader_prompt_template (str): Prompt template for the Leader, should contain a placeholder for the member outputs (e.g., {member_outputs}).
-    Returns:
-        str: The Gemini model's synthesized answer.
-    """
-    joined_outputs = "\n".join(member_outputs)
-    prompt = leader_prompt_template.format(member_outputs=joined_outputs)
-    return call_gemini(prompt)
+# def leader_agent(member_outputs: list, leader_prompt_template: str) -> str:
+#     """
+#     Aggregates Member agent outputs and synthesizes a final answer using the Gemini model.
+#     Args:
+#         member_outputs (list): List of strings, each the output from a Member agent.
+#         leader_prompt_template (str): Prompt template for the Leader, should contain a placeholder for the member outputs (e.g., {member_outputs}).
+#     Returns:
+#         str: The Gemini model's synthesized answer.
+#     """
+#     joined_outputs = "\n".join(member_outputs)
+#     prompt = leader_prompt_template.format(member_outputs=joined_outputs)
+#     return call_gemini(prompt)
 
 def collaborative_long_agent_pipeline(
+    query:str,
     doc: str,
     member_prompt_template: str,
     leader_prompt_template: str,
-    target_chunks: int = 4,
+    chunk_size: int = 1500,
     max_rounds: int = 5
 ) -> (str, bool):
     """
@@ -89,23 +87,23 @@ def collaborative_long_agent_pipeline(
         conflict_resolution_failed (bool): True if consensus was not reached within max_rounds.
     """
     # Step 1: Chunking
-    chunks = split_into_chunks(doc, target_chunks)
+    chunks = split_into_chunks(doc, chunk_size)
     member_chunks = {i: chunk for i, chunk in enumerate(chunks)}
     # print(member_chunks)
     member_outputs = {}
-    dialogue_history = []
+    # dialogue_history = []
     state = "NEW_STATE"
     round_num = 0
     conflict_resolution_failed = False
 
     while state != "ANSWER" and round_num < max_rounds:
         print(f"\n--- Reasoning Round {round_num+1} ---")
-        member_outputs = {}
+        # member_outputs = {}
         for i, chunk in member_chunks.items():
-            prompt = member_prompt_template.format(chunk=chunk)
+            prompt = member_prompt_template.format(chunk=chunk, query = query)
             answer = call_gemini(prompt)
             member_outputs[i] = answer
-        dialogue_history.append({"round": round_num, "member_outputs": member_outputs.copy()})
+        # dialogue_history.append({"round": round_num, "member_outputs": member_outputs.copy()})
         answers = list(member_outputs.values())
         # Use simple conflict detection
         if any(a.strip() == "" for a in answers):
@@ -123,31 +121,46 @@ def collaborative_long_agent_pipeline(
         
         # Step 4: Conflict resolution (inter-member communication)
         if state == "CONFLICT":
-            # Find clusters of conflicting answers
-            answer_to_ids = {}
+            # 1) Cluster answers → member IDs
+            clusters = {}
             for idx, ans in member_outputs.items():
                 key = ans.strip().lower()
-                answer_to_ids.setdefault(key, []).append(idx)
-            # Only handle pairwise conflict for simplicity
-            if len(answer_to_ids) == 2:
-                ids1, ids2 = list(answer_to_ids.values())
-                # Merge chunks for each cluster and re-query
-                merged1 = " ".join([member_chunks[i] for i in ids1 + ids2])
-                merged2 = merged1  # Both clusters get the same merged evidence
-                for i in ids1 + ids2:
-                    prompt = member_prompt_template.format(chunk=merged1)
-                    member_outputs[i] = call_gemini(prompt)
-                # Update member_chunks to reflect merged evidence
-                for i in ids1 + ids2:
-                    member_chunks[i] = merged1
-                # Continue loop
-            else:
-                # If more than 2 clusters, merge all
-                merged = " ".join([member_chunks[i] for i in member_chunks])
-                for i in member_chunks:
-                    prompt = member_prompt_template.format(chunk=merged)
-                    member_outputs[i] = call_gemini(prompt)
-                    member_chunks[i] = merged
+                clusters.setdefault(key, []).append(idx)
+
+            # 2) Identify missing vs. truth IDs by soft-matching
+            no_mention_ids = []
+            truth_ids = []
+            for key, ids in clusters.items():
+                if "not found" in key or "no mention" in key:
+                    no_mention_ids.extend(ids)
+                else:
+                    truth_ids.extend(ids)
+
+            # 3) If we don’t have at least one truth and one missing, broaden next round
+            if not truth_ids or not no_mention_ids:
+                print("No clean truth/missing split → asking a broader question next round.")
+                state = "NEW_STATE"
+            elif round_num < max_rounds - 1: # if max_rounds is 3, we can only do 2 rounds of conflict resolution
+                # 4) For every pair (t, m), share their chunks and re-ask both
+                print("Truth IDs: ", truth_ids)
+                print("No mention IDs: ", no_mention_ids)
+                # pick just one truth id randomly to merge with each no_mention id
+                t = np.random.choice(truth_ids, size=1, replace=False)[0]
+                print("Chosen truth ID: ", t)
+                for m in no_mention_ids:
+                    ci = member_chunks[m]
+                    cj = member_chunks[t]
+                    merged = ci + " " + cj
+                    print(f"Sharing chunks between member {m} (missing) and {t} (truth).")
+                    print("length of missing: ", len(ci), "length of truth: ", len(cj), "Length merged: ", len(merged), "characters")
+                    # update THEIR private contexts
+                    member_chunks[m] = merged
+                    # member_chunks[t] = merged
+                    # re-ask both
+                    prompt = member_prompt_template.format(chunk=merged, query=query)
+                    member_outputs[m] = call_gemini(prompt)
+                    # member_outputs[t] = call_gemini(prompt)
+        # increment round, then loop back to re-cluster, etc.
         round_num += 1
 
     if state != "ANSWER":
@@ -156,7 +169,7 @@ def collaborative_long_agent_pipeline(
 
     # Step 5: Synthesize final answer
     final_outputs = list(member_outputs.values())
-    prompt = leader_prompt_template.format(member_outputs="\n".join(final_outputs))
+    prompt = leader_prompt_template.format(member_outputs="\n".join(final_outputs), query = query)
     final_answer = call_gemini(prompt)
     return final_answer, conflict_resolution_failed
 
@@ -187,21 +200,22 @@ The Scott Special, also known as the Coyote Special, the Death Valley Coyote or 
     member_prompt_template = (
         "Given the following passage chunk, answer the question as best as possible.\n"
         "Chunk:\n{chunk}\n"
-        "Question: " + query + "\n"
+        "Question: {query}\n"
         "If the answer is not in the chunk, say 'Not found in this chunk.'"
     )
     leader_prompt_template = (
-        "Given the following answers from different document chunks, synthesize a final answer to the question.\n"
+        "Given the following answers from different document chunks, synthesize a final answer to the question. Only state the answer without explanation\n"
         "Member outputs:\n{member_outputs}\n"
-        "Question: " + query + "\n"
-        "If there is a clear, correct answer, state it. If not, explain why."
+        "Question: {query}\n"
     )
 
     # Run the collaborative pipeline
     final_answer, conflict_resolution_failed = collaborative_long_agent_pipeline(
+        query,
         context,
         member_prompt_template,
         leader_prompt_template,
+        chunk_size = 250,
         max_rounds=3
     )
     print("Gold answer:", gold_answer)
@@ -233,9 +247,11 @@ def test_conflict_resolution():
     )
 
     final_answer, conflict_resolution_failed = collaborative_long_agent_pipeline(
+        query, 
         context,
         member_prompt_template,
         leader_prompt_template,
+        chunk_size = 20,
         max_rounds=3
     )
     print("Gold answer:", gold_answer)
