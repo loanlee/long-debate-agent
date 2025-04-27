@@ -77,7 +77,7 @@ def collaborative_long_agent_pipeline(
     doc: str,
     member_prompt_template: str,
     leader_prompt_template: str,
-    chunk_size: int = 1500,
+    chunk_size: int = 10000,
     max_rounds: int = 5
 ) -> (str, bool):
     """
